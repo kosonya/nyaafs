@@ -1,0 +1,66 @@
+#!/usr/bin/env python
+#
+# Copyright (C) 2009 Maksim Kovalev
+#
+# This file is part of NyaaFS
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+# $Id: hierarchy.py 7 2009-05-15 19:13:07Z Vladimir.Badaev $
+
+class hierarchy:
+	def __init__(self, name, cursor):
+		self.cu = cursor
+		self.name = name
+		self.cu.execute("SELECT name FROM sqlite_master WHERE name LIKE 'hierarchy_%s_%%'" % self.name) #FIXME _ symbols
+		result = self.cu.fetchall()
+		if self.cu.rowcount!=3 :
+			#FIXME --- error, need exeption
+			self.cu.execute("CREATE TABLE hierarchy_%s_dir_id (\
+id INTEGER NOT NULL,\
+name TEXT,\
+PRIMARY KEY(id),\
+FOREIGN KEY (id)\
+REFERENCES hierarchy_%s_dir_hierarchy (id))"\
+				% (self.name, self.name))
+			self.cu.execute("CREATE TABLE hierarchy_%s_dir_hierarchy (\
+id INTEGER NOT NULL,\
+parent INTEGER NOT NULL,\
+PRIMARY KEY(id),\
+FOREIGN KEY(parent)\
+REFERENCES hierarchy_%s_dir_hierarchy (id),\
+FOREIGN KEY(id)\
+REFERENCES hierarchy_%s_dir_id (id))" % (self.name, self.name, self.name))
+			self.cu.execute("CREATE TABLE hierarchy_%s_file_parents(\
+file_id INTEGER NOT NULL,\
+parent INTEGER NOT NULL,\
+PRIMARY KEY(file_id),\
+FOREIGN KEY(parent)\
+REFERENCES hierarchy_%s_dir_id(id))"\
+				% (self.name, self.name))
+			self.cu.execute("""INSERT INTO hierarchy_%s_dir_id VALUES (0, 'root')""")
+
+	def find_by_path(self, path):
+		def file_or_dir(self, dir_id, name):
+			self.cu.execute("""SELECT id FROM hierarchy_%s_dir_id I, hierarchy_%s_dir_hierarchy H\
+WHERE H.parent = %d AND I.name = '%s'""" % (self.name, self.name, dir_id, name))
+			result = self.cu.fetchall()
+			if self.cu.rowcount == 1:
+				return ("dir", result[0])
+			self.cu.execute("""SELECT id FROM sys_file_id SF, hierarchy_%s_file_parents FP\
+WHERE FP.parent = %d AND SF.name = '%s'""" % (self.name, dir_id, name))
+			result = self.cu.fetchall()
+			return ("file", result[0])
+		request = "SELECT id FROM hierarchy_%s_dir_id DID, hierarchy_%s_dir_hierarchy DIH\
+WHERE DIH.parent = 0, DID.name = '%s'

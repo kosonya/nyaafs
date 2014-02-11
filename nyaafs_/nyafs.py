@@ -1,0 +1,854 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+# vim:set shiftwidth=4 tabstop=4 expandtab textwidth=79:
+#
+# Copyright (C) 2009 Vladimir Badaev, Maxim Kovalev
+#
+# This file is part of NyaaFS
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+# $Id: nyafs.py 98 2009-06-10 15:08:09Z Maxim.Kovalev $
+
+
+# imports
+
+import errno
+import fuse
+import os
+import stat
+import time
+fuse.fuse_python_api = (0,2)
+
+import sqlite3 as db
+
+import xattr
+import systables
+import unix_attr
+import hierarchy
+import nyastat
+
+from nyaerror import NyaError
+
+def flag2mode(flags):
+    md = {os.O_RDONLY: 'r', os.O_WRONLY: 'w', os.O_RDWR: 'w+'}
+    m = md[flags & (os.O_RDONLY | os.O_WRONLY | os.O_RDWR)]
+
+    if flags | os.O_APPEND:
+        m = m.replace('w', 'a', 1)
+
+    return m
+
+def str_to_mypath(pth):
+    path = ['root']
+    while len(pth) > 1:
+        pth, tmp = os.path.split(pth)
+        path.insert(-1, tmp)
+    path.reverse()
+    return path
+
+
+
+
+#
+#	NyaDB
+#
+class	NyaDB(object):
+    """
+    Класс для работы с базой данных.
+    ПреАльфа :)
+    """
+    def __init__(self):
+        """
+        Конструктор. Можно добавить пару парамнтров типа имени базы и тд.
+        """
+        self.db = db.connect("nyaadb") # db, self.db... попахивает срачем
+        self.cu = self.db.cursor()
+        self.st = systables.systables(self.cu, self.db)
+        self.hier = hierarchy.hierarchy("default", self.cu, self.db)
+        self.fatr = unix_attr.unix_attr("def_files", self.cu, self.db)
+        self.datr = unix_attr.unix_attr("def_dirs", self.cu, self.db)
+        self.xattr=xattr.xattr(self.cu, self.db)
+        tmp = int(time.time())
+        at = {}
+        at["st_ctime"] = at["st_atime"] = at["st_mtime"] = tmp
+        at["st_mode"] = stat.S_IFDIR | 0755
+        at["st_nlink"] = 2
+        try:
+            self.datr.add_item(0, at)
+        except NyaError, e:
+            return
+        
+    def __del__(self):
+        """
+        Деструктор.
+        """
+        pass
+
+    def dropDir(self, path):
+        try:
+            pth = str_to_mypath(path)
+            type, id = self.hier.find_by_path(pth)
+        except NyaError, e:
+            if not e.kwargs.get("fatal", True):
+                if e.kwargs["errno"] == errno.ENOENT:
+                    return ""
+            raise e
+        if type != "dir":
+            raise -errno.ENOTDIR
+        list =  self.hier.read_dir(id)
+        list = map( (lambda (i, n, t) :n), list)
+        if list!= ['.', '..'] and list!= ['..', '.'] and list != []:
+            raise -errno.ENOTEMPTY
+        self.hier.del_dir(id)
+        self.datr.delete_item(id)
+
+    def dropFile(self, path):
+        try:
+            pth = str_to_mypath(path)
+            type, id = self.hier.find_by_path(pth)
+        except NyaError, e:
+            if not e.kwargs.get("fatal", True):
+                if e.kwargs["errno"] == errno.ENOENT:
+                    return ""
+            raise e
+        if type != "file":
+            raise -errno.EISDIR
+        dr, fl = os.path.split(path)
+        dpath = str_to_mypath(dr)
+        type, cwd = self.hier.find_by_path(dpath)
+        self.hier.del_file_from_dir(cwd, id)
+        self.fatr.delete_item(id)
+        self.st.del_file(id)
+    def getFileAttr(self, path):
+        """
+        Возвращает NyaStat файла path.
+        """
+        print "getFileAttr", path
+        pth = str_to_mypath(path)
+        print pth
+#        type, id = self.hier.find_by_path(pth)
+        #try:
+        result = self.hier.find_by_path(pth)
+        #except NyaError, e:
+        #    return
+        #print result
+        type, id = result
+        #print type, id
+        if type == "file":
+            return self.fatr.get_attr(id)
+        else:
+            return self.datr.get_attr(id)
+        
+    def setFileAttr(self, path, nyaStat):
+        """ 
+        Изменяет атрибуты файла.
+        """
+        pth = str_to_mypath(path)
+        print pth
+#        type, id = self.hier.find_by_path(pth)
+        #try:
+        result = self.hier.find_by_path(pth)
+        #except NyaError, e:
+        #    return
+        print result
+        type, id = result
+        print type, id
+        ( \
+            st_dev, \
+            st_ino, \
+            st_mode, \
+            st_nlink, \
+            st_uid, \
+            st_gid, \
+            st_rdev, \
+            st_size, \
+            st_blksize, \
+            st_blocks, \
+            st_atime, \
+            st_mtime, \
+            st_ctime) = ( \
+                          nyaStat.st_dev, \
+                          nyaStat.st_ino, \
+                          nyaStat.st_mode, \
+                          nyaStat.st_nlink, \
+                          nyaStat.st_uid, \
+                          nyaStat.st_gid, \
+                          nyaStat.st_rdev, \
+                          nyaStat.st_size, \
+                          nyaStat.st_blksize, \
+                          nyaStat.st_blocks, \
+                          nyaStat.st_atime, \
+                          nyaStat.st_mtime, \
+                          nyaStat.st_ctime)
+        attrs={"st_dev": st_dev,
+            "st_ino": st_ino, \
+            "st_mode": st_mode, \
+            "st_nlink": st_nlink, \
+            "st_uid": st_uid, \
+            "st_gid": st_gid, \
+            "st_rdev": st_rdev, \
+            "st_size": st_size, \
+            "st_blksize": st_blksize, \
+            "st_blocks": st_blocks, \
+            "st_atime": st_atime, \
+            "st_mtime": st_mtime, \
+            "st_ctime": st_ctime}
+        if type == "file":
+            self.fatr.edit_item(id, attrs)
+        else:
+            self.datr.edit_item(id, attrs)
+
+    def getRealFile(self, path, mode=None):
+        """
+        Возвращает путь к файлу на хост-фс, по пути path.
+        Возможно еще будет нужна проверка прав доступа и тп.
+        """
+        try:
+            pth = str_to_mypath(path)
+            type, id = self.hier.find_by_path(pth)
+        except NyaError, e:
+            if not e.kwargs.get("fatal", True):
+                if e.kwargs["errno"] == errno.ENOENT:
+                    return ""
+            raise e
+
+        if type == "dir":
+            #pass #ERROR
+            raise NyaError("", self.__class__, "getRealFile", fatal=False, errno=errno.EISDIR)
+
+        self.cu.execute("SELECT name FROM sys_hw_names \
+WHERE id = %d" % id)
+        return str(self.cu.fetchall()[0][0])
+        
+        
+    def getFilesFromDir(self, path):
+        """
+
+        Возвращает список файлов из директории path.
+        Возможно как (имя, NyaStat).
+        """
+        pth = str_to_mypath(path)
+        type, id = self.hier.find_by_path(pth)
+#        print type, id
+        if type != "dir":
+            raise NyaError("", self.__class__, "getFilesFromDir", fatal=False, errno=errno.EISDIR)
+        print "NyaDB.getFilesFromDir(%s) `%s'" % (path, self.hier.read_dir(id))
+        return self.hier.read_dir(id)
+
+#   def newFile(self, path, type, stat):
+ #       """
+ #       ХЗ точно, наверно это будет раз пять переколбашено.
+ #       Ориентировочно: создать новый файл, характеризуемый путем, типом(файл, дирректория етц), и статом.
+ #       """
+ #       dir, name = os.path.split(path)
+ #       found_type, cwd = self.hier.find_by_path(str_to_mypath(dir))
+ #       if found_type == "file":
+ #           pass #ОШИБКА
+ #       if type == "file":
+ #           new_id = self.st.add_file(name)
+ #           inode = new_id*2 + 1
+ #           stat.fatr.add_item (new_id, nyastat.NyaStat((stat.st_dev, stat.st_ino, stat.st_mode, stat.st_nlink,\
+ #            stat.st_uid, stat.st_gid, stat.st_rdev, stat.st_size,\
+ #            stat.st_blksize, stat.st_blocks, stat.at_atime,\
+ #            stat.st_mtime, stat.st_ctime)))
+ #           self.hier.add_file_to_dir(cwd, new_id)
+ #           return new_id
+ #       else:
+ #           new_id = self.hier.add_dir_to_dir(cwd, name)
+ #           inode = new_id * 2
+ #           self.datr.add_item(new_id, nyastat.NyaStat((stat.st_dev, stat.st_ino, stat.st_mode, stat.st_nlink,\
+ #            stat.st_uid, stat.st_gid, stat.st_rdev, stat.st_size,\
+ #            stat.st_blksize, stat.st_blocks, stat.at_atime,\
+ #            stat.st_mtime, stat.st_ctime)))
+ # ВПЕРДЕ!!!
+    def newFile(self, path, mode):
+        dir, name = os.path.split(path)
+        ptd = str_to_mypath(dir)
+        type, cwd = self.hier.find_by_path(ptd)
+#        print type, cwd
+        new_id = self.st.add_file(name)
+        self.hier.add_file_to_dir(cwd, new_id)
+        attrs = {}
+        attrs["st_ctime"] = attrs["st_mtime"] = attrs["st_atime"]= \
+            int(time.time())
+        attrs["st_ino"] = new_id*2 + 1
+        attrs["st_nlink"] = 1
+        attrs["st_mode"] = mode
+        print "nyafs.NyaDB.newFile() : attrs = %s" % attrs
+        self.fatr.add_item(new_id, attrs)
+        return new_id
+
+    def newDir(self, path, mode):
+        print "NyaDB.newdir()", path
+        dir, name = os.path.split(path)
+        print "NyaDB.newdir()", dir, name
+        ptd = str_to_mypath(dir)
+        print "NyaDB.newdir()", ptd
+        type, cwd = self.hier.find_by_path(ptd)
+        print "NyaDB.newdir()", type, cwd
+        new_id = self.hier.add_dir_to_dir(cwd, name)
+        print "NyaDB.newdir() new_id = ", new_id
+        
+        attrs = {}
+        attrs["st_ctime"] = attrs["st_mtime"] = attrs["st_atime"]= \
+            int(time.time())
+        attrs["st_ino"] = new_id*2
+        attrs["st_nlink"] = 2
+        attrs["st_mode"] = mode
+        attrs["st_nlink"] = 0
+
+        print "NyaDB.newdir() attrs = ", attrs
+        self.datr.add_item(new_id, attrs)
+        #print "NyaDB.newdir() datr.get_attr(",new_id, ") ", self.datr.get_attr(new_id)
+        #print self.getFileAttr(path)
+
+
+        print "aaa"
+        return new_id
+ 
+    def getFileXAttr(self, *hz):
+        """
+        Получить расширеные атрибуты файла. Надо поманить, ВТФ оно вообще есть.
+        Кста, возможно потом понадобиться функция для получения списка xattr-ов.
+        """
+        pass
+
+    def setFileXAttr(self, *hz):
+        """
+        Изменить xattr-ы.
+        """
+        pass
+
+# Есть подозрение, что это мега костыль. Но как передать базу данных каждому экземпляру NyaFile я хз
+global globalDB 
+globalDB = None
+
+#
+#   NyaFile
+#
+class   NyaFile(object):
+    """
+    Класс представляет интерфейс к файлу.
+    Почти целиком чеснотибренный.
+    """
+    def __init__(self, path, flags, mode=0):
+        """
+        flags:
+            O_ACCMODE	        0003
+            O_RDONLY	          00
+            O_WRONLY	          01
+            O_RDWR		          02
+            O_CREAT		        0100	/* not fcntl */
+            O_EXCL		        0200	/* not fcntl */
+            O_NOCTTY	        0400	/* not fcntl */
+            O_TRUNC		       01000	/* not fcntl */
+            O_APPEND	       02000
+            O_NONBLOCK	       04000
+            O_NDELAY	  O_NONBLOCK
+            O_SYNC		      010000
+            O_FSYNC		      O_SYNC
+            O_ASYNC		      020000
+
+            O_DIRECT	      040000	/* Direct disk access.	*/
+            O_DIRECTORY      0200000	/* Must be a directory.	 */
+            O_NOFOLLOW     	 0400000	/* Do not follow links.	 */
+            O_NOATIME       01000000    /* Do not set atime.  */
+            O_CLOEXEC       02000000    /* Set close_on_exec.  */
+
+        mode:
+            S_IRWXU            00700    user (file owner) has read,
+                                        write and execute permission
+            S_IRUSR            00400    user has read permission
+            S_IWUSR            00200    user has write permission
+            S_IXUSR            00100    user has execute permission
+            S_IRWXG            00070    group has read, write and execute permission
+            S_IRGRP            00040    group has read permission
+            S_IWGRP            00020    group has write permission
+            S_IXGRP            00010    group has execute permission
+            S_IRWXO            00007    others have read, write and execute permission
+            S_IROTH            00004    others have read permission
+            S_IWOTH            00002    others have write permission
+            S_IXOTH            00001    others have execute permission
+
+        """
+        print "NyaFile.__init__(%s, %o, %o)" %(path, flags, mode)
+
+        import sys
+#        sys.stdin.readline()
+        global globalDB
+        self.db = globalDB # Осторожно, быдлокод!!
+#        print "AAAAAAAAAAAAAAAAAAAAAAAAAAA", path, flags, mode
+        self.path = path
+
+        real_name = self.db.getRealFile(path)
+#        self.real_name = real_name
+        if real_name == "":
+            #tmp_name = "._tmp"
+            #self.file = os.fdopen(os.open(tmp_name, flags, mode), flag2mode(flags))
+            #self.file.close()
+            #st = os.stat(tmp_name)
+            #nst = nyastat.NyaStat((st.st_dev, st.st_ino, st.st_mode, st.st_nlink, \
+            #        st.st_uid, st.st_gid, st.st_rdev, st.st_size, \
+            #        st.st_blksize, st.st_blocks, st.st_atime, \
+            #        st.st_mtime, st.st_ctime))
+            #real_name = self.db.newFile(path, , nst)
+            #os.rename(tmp_name, real_name)
+            real_name = str(self.db.newFile(path, mode))
+            print "real_name = ", real_name
+        self.real_name = real_name
+        self.file = os.fdopen(os.open(real_name, flags, mode), flag2mode(flags))
+        # Не спрашивайте меня, что это... чеснотыбренно из пифузьных туториалов
+        self.fd = self.file.fileno()
+        print "File maked: %s %s" % (path, real_name)
+
+    def read(self, length, offset, fh=None):
+        """
+        Чтение из файла.
+        """
+        print "NyaFile.read() ", "length = ", length,\
+        " offset = ", offset, " fh = ", fh 
+        curstat = self.db.getFileAttr(self.path)
+        tmp = int(time.time())
+        curstat.st_atime = tmp
+        self.db.setFileAttr(self.path, curstat)
+
+        self.file.seek(offset)
+        return self.file.read(length)
+
+    def write(self, buf, offset, fh=None):
+        """
+        Внезапно запись в файл.
+        """
+        print "NyaFile.write(..., %s, %s)" %(offset, fh),\
+        " buf = ", buf
+        self.file.seek(offset)
+        self.file.write(buf)
+        tmp = int(time.time())
+        curstat = self.db.getFileAttr(self.path)        
+        curstat.st_atime = curstat.st_mtime = tmp
+        self.db.setFileAttr(self.path, curstat)
+        return len(buf) # Или питон мегагарантирует, что все запишется, или оно упадет
+
+    def fgetattr(self, fh=None):
+        """
+        Возвращает атрибуты. Поидее надо брать их из БД, но я пока буду возвращать
+        атрибуты реального файла FIXME
+        """
+        print "NyaFile.fgetattr() fh = ", fh
+        dba = self.db.getFileAttr(self.path)
+        #print "NyaFile.fgetattr() %s" % dba
+        return dba
+
+    def ftruncate(self, len, fh=None):
+        """
+        """
+        print "NyaFile.ftruncate() len = ", len, " fh = ", fh
+        self.file.truncate(len)
+
+    def flush(self, fh=None):
+        """
+        """
+        print "NyaFile.flush() fh = ", fh
+        os.close(os.dup(self.fd))
+
+
+    def _fflush(self):
+        """
+        Что за куча флашей и синков?
+        """
+        print "NyaFile._fflush()"
+        if 'w' in self.file.mode or 'a' in self.file.mode:
+            self.file.flush()
+
+    def release(self, fh=None):
+        """
+        """
+        print "NyaFile.release() fh = ", fh
+        print "real name =  ", self.real_name
+        newsize = os.path.getsize(self.real_name)
+        print "size = ", newsize
+        curstat = self.db.getFileAttr(self.path)
+        curstat.st_size = newsize
+        self.db.setFileAttr(self.path, curstat)
+        self.file.close() # Не спрашивайте меня, почему эта функция называется release
+
+    def fsync(self, fdatasync, fh=None):
+        """
+        """
+        print "NyaFile.fsync() " #fdatasync = ", fdatasync, " fh = ", fh
+        self._fflush()
+        if isfsyncfile and hasattr(os, 'fdatasync'):
+            os.fdatasync(self.fd)
+        else:
+            os.fsync(self.fd)
+
+    def direct_io(self, *args, **kwargs):
+        print "NyaFile.direct_io() args = ", args,\
+        " kwargs = ", kwargs
+        print "direct_io: ", args, kwargs
+        return -errno.ENOSYS
+
+    def keep_cache(self, *args, **kwargs):
+        print "keep_cahe: ", args, kwargs
+        return -errno.ENOSYS
+
+    def __getattr__(self, at):
+        print "NyaFile.__get__attr__(", at, ")"
+        #return (lambda *a, **kw: 1)
+        
+
+
+
+
+#
+#   NyaFS
+#
+class   NyaFS(fuse.Fuse):
+    """
+    """
+
+    def __init__(self, *a, **kw):
+        """
+        """
+        print "NyaFS.__init__() a = ", a, " kw = ", kw
+        fuse.Fuse.__init__(self, *a, **kw)
+        self.db = NyaDB()
+        global globalDB
+        globalDB = self.db # Осторожно, быдлокод!
+        #print "nyafs: ", type(globalDB)
+        
+    def getattr(self, path):
+        """
+        """
+        print "NyaFS.getattr(%s)" % path
+        if path == '/':
+            st = nyastat.NyaStat()
+            st.st_mode = stat.S_IFDIR | 0755
+            #st.st_nlink = 2
+            return st
+
+        try:
+            a = self.db.getFileAttr(path)
+            print "getattr, a = ", a
+        except NyaError, e:
+            if not e.kwargs.get("fatal", True):
+                return -e.kwargs["errno"]
+            else:
+                raise e
+        return a #-errno.ENOSYS
+    def readdir(self, path, offset):
+        """
+        Возвращает список файлов в дирректории.
+        ВТФ offset йа хз. ИМХО, он читает не всю директорию, а только
+        один файл, и offset - его порядковый номер
+        """
+        print "NyaFuse.readdir(%s, %s): " %(path, offset)
+        try:
+            files = self.db.getFilesFromDir(path)
+            print "NyaFuse.readdir() %s" % files
+        except NyaError, e:
+            if not e.kwargs.get("fatal", True):
+                return -e.kwargs["errno"]
+            raise e
+        #for e in files:
+        #    yield fuse.Direntry(e[1].encode("ASCII"))
+        #print [x[1] for x in files]
+        return [fuse.Direntry(x[1].encode("ASCII")) for x in files]
+
+
+    def rmdir(self, path):
+        print "NyaFS.rmdir(%s)" % path
+        self.db.dropDir(path)
+
+
+    def readlink(self, path): 
+        """
+        """
+        print "NyaFS.readlink(%s)" % path
+        return -errno.ENOSYS
+    def mknod(self, path, mode, rdev):
+        """
+        """
+        print "NyaFS.mknod(path = ", path,\
+                " mode = ", mode, " rdev = ", rdev, ")"
+        return -errno.ENOSYS
+    
+    def mkdir(self, path, mode):
+        """
+        """
+        print "NyaFs.mkdir(", path, ", ", mode, ")"
+        try:
+            result = self.db.newDir(path, stat.S_IFDIR | mode)
+        except NyaError, e:
+            if not e.kwargs.get("fatal", True):
+                print e
+                return -e.kwargs["errno"]
+            raise e
+                
+        print "NyaFS.mkdir() %s %s = %s" %(path, mode, result)
+
+    def unlink(self, path):
+        """
+        """
+        print "NyaFS.unlink(", path, ")"
+        rf = self.db.getRealFile(path, 666)
+        self.db.dropFile(path)
+        os.unlink(rf)
+#        return -errno.ENOSYS
+    def symlink(self, target, name):
+        """
+        """
+        print "NyaFS.symlink(target =",\
+                target, ", name = ", name, ")"
+        return -errno.ENOSYS
+    def rename(self, old, new):
+        """
+        """
+        print "NyaFS.rename(old = ", old,\
+                ", new = ", new, ")"
+        oldp = str_to_mypath(old)
+        try:
+            oldtype, oldid = self.db.hier.find_by_path(oldp)
+        except NyaError, e:
+            if not e.kwargs.get("fatal", True):
+                if e.kwargs["errno"] == errno.ENOENT:
+                    return
+            raise e
+        newdir, newname = os.path.split(new)
+        newdirp = str_to_mypath(newdir)
+        try:
+            newdirtype, newdirid = self.db.hier.find_by_path(newdirp)
+        except NyaError, e:
+            if not e.kwargs.get("fatal", True):
+                if e.kwargs["errno"] == errno.ENOENT:
+                    return
+            raise e
+        if newdirtype != "dir":
+            raise NyaError("No such file or directory", self.__class__, "rename", fatal=False, errno=errno.ENOENT)
+        newnamep = str_to_mypath(new)
+        try:
+            newnametype, newnameid = self.db.hier.find_by_path(newnamep)
+        except NyaError, e:
+            if not e.kwargs.get("fatal", True):
+                if e.kwargs["errno"] == errno.ENOENT:
+                    if oldtype == "dir":
+#                        print oldid, newdirid
+                        self.db.hier.move_dir(oldid, newdirid)
+                        self.db.hier.rename_dir(oldid, newname)
+                        return
+                    else:
+                        self.db.hier.move_file(oldid, newdirid)
+                        self.db.st.rename_file(oldid, newname)
+                        return
+            raise e
+        if newnametype == "file":
+            self.db.dropFile(new)
+            self.db.hier.move_file(oldid, newdirid)
+            self.db.st.rename_file(oldid, newname)
+            return
+        
+    def link(self, target, name):
+        """
+        """
+        print "NyaFS.link(target = ", target,\
+                ", name = ", name, ")"
+        return -errno.ENOSYS
+    def fsinit(self):
+        """
+        """
+        print "NyaFS.fsinit()"
+        #return -errno.ENOSYS
+        pass
+
+    def access(self, *a, **kw):
+        print "NyaFS.access() a = ", a, ", kw = ", kw
+        return None
+
+    def chmod(self, path, mode):
+        print "NyaFS.chmod() path = ", path, ", mode = ", mode
+        pth = str_to_mypath(path)
+        try:
+            type, id = self.db.hier.find_by_path(pth)
+        except NyaError, e:
+            if not e.kwargs.get("fatal", True):
+                if e.kwargs["errno"] == errno.ENOENT:
+                    return
+            raise e
+        curstat = self.db.getFileAttr(path)        
+        curstat.st_mode &= ~07777
+        curstat.st_mode |= mode
+        self.db.setFileAttr(path, curstat)
+
+
+    def chown(self, path, user, group):
+        print "NyaFS.chmod() path = ", path, ", user = ", user, \
+                ", group = ", group
+        pth = str_to_mypath(path)
+        try:
+            type, id = self.db.hier.find_by_path(pth)
+        except NyaError, e:
+            if not e.kwargs.get("fatal", True):
+                if e.kwargs["errno"] == errno.ENOENT:
+                    return
+            raise e
+        curstat = self.db.getFileAttr(path)        
+        curstat.st_uid = user
+        curstat.st_gid = group
+        self.db.setFileAttr(path, curstat)
+
+
+
+    def main(self, *a, **kw):
+        print "NyaFS.main() a = ", a, ", kw = ", kw
+        self.file_class = NyaFile
+        return fuse.Fuse.main(self)
+    #def __getattr__(self, at):
+    #    print "*** NyaFS.__get__attr__(", at, ")"
+    #    if at in self.__dict__:
+    #        return self.__dict__[i]
+    #    return (lambda *a, **kw: -errno.ENOSYS)
+    #
+    def fsync(self, path, *a, **kw):
+        print "*** NyaFS.fsync() path = ", path #, ", a = ", a, ", kw = ", kw
+
+    # Тибрено!
+    #def access(self, path, mode):
+    #    if not os.access("." + path, mode):
+    #        return -EACCES
+
+    def getxattr(self, path, name, size):
+        """
+        val = name.swapcase() + '@' + path
+        if size == 0:
+            # We are asked for size of the value.
+            return len(val)
+        return val
+
+        Насколько я понял возвращает значение аттрибута.
+        name -- есть ли в начале ``user.'' я хз, поидее должно быть.
+        size -- если 0 -- то возвращаем длинну, иначе пофик.
+        """
+        print "getxattr()", path, name, size
+        pth = str_to_mypath(path)
+        try:
+            type, id = self.db.hier.find_by_path(pth)
+        except NyaError, e:
+            if not e.kwargs.get("fatal", True):
+                if e.kwargs["errno"] == errno.ENOENT:
+                    return
+            raise e
+        result = self.db.xattr.get_attr(id, name)
+        print result
+        result = 'user.' + result
+        print result
+        
+        return len(result)
+        
+        
+    def listxattr(self, path, size):
+        """
+        # We use the "user" namespace to please XFS utils
+        aa = ["user." + a for a in ("foo", "bar")]
+        if size == 0:
+            # We are asked for size of the attr list, ie. joint size of attrs
+            # plus null separators.
+            return len("".join(aa)) + len(aa)
+        return aa
+
+        Насколько я понял, нужно ко всем атрибутам добавлять ``user.''.
+        Если size == 0, то возвращается размер (имен?) атррибутов вместе с '\0'.
+        Откуда они взяли  len("".join(aa)) + len(aa) я хз.
+        """
+        print "listxattr()", path, size
+        pth = str_to_mypath(path)
+        try:
+            type, id = self.db.hier.find_by_path(pth)
+        except NyaError, e:
+            if not e.kwargs.get("fatal", True):
+                if e.kwargs["errno"] == errno.ENOENT:
+                    return
+            raise e
+        result = self.db.xattr.get_possible(id)
+        print result
+        return -errno.ENOSYS
+
+
+    # Сам писал
+    def setxattr(self, path, name, value, size):#, flags):
+        """
+        В доках по пифузе и фузи ничерта нету, инфу выдирал из манов.
+        Для path устанавливает аттрибут name в value.(Поидее как).
+        На size в свете того, что это питон можно думаю положить с прибором.
+
+        flags -- это либо XATTR_CREATE который говорит создать, если есть -- напнуцо с EEXIST
+                либо XATTR_REPLACE который говорит заменить, если нету -- напнуцо с ENOATTR
+                либо ничего(О_о) -- создать если нет, заменить если есть
+                где брать XATTR_* я хз.
+        """
+        print "setxattr()", path, name, value, size
+        #return -errno.ENOSYS
+        pth = str_to_mypath(path)
+        try:
+            type, id = self.db.hier.find_by_path(pth)
+        except NyaError, e:
+            if not e.kwargs.get("fatal", True):
+                if e.kwargs["errno"] == errno.ENOENT:
+                    return
+            raise e
+        self.db.xattr.set_attr(id, name, value)
+
+
+
+#    Тибрено! Надо сделать наверное
+#    def statfs(self):
+#        """
+#        Should return an object with statvfs attributes (f_bsize, f_frsize...).
+#        Eg., the return value of os.statvfs() is such a thing (since py 2.2).
+#        If you are not reusing an existing statvfs object, start with
+#        fuse.StatVFS(), and define the attributes.
+#
+#        To provide usable information (ie., you want sensible df(1)
+#        output, you are suggested to specify the following attributes:
+#
+#            - f_bsize - preferred size of file blocks, in bytes
+#            - f_frsize - fundamental size of file blcoks, in bytes
+#                [if you have no idea, use the same as blocksize]
+#            - f_blocks - total number of blocks in the filesystem
+#            - f_bfree - number of free blocks
+#            - f_files - total number of file inodes
+#            - f_ffree - nunber of free file inodes
+#        """
+#
+#        return os.statvfs(".")
+
+    def fsinit(self):
+        os.chdir(self.root)        
+        return -errno.ENOSYS
+
+def main():
+    nyafs = NyaFS()
+    nyafs.flags=0
+    nyafs.multithreaded=0
+    nyafs.parse(errex=1)
+    nyafs.fuse_args.setmod("foreground")
+    nyafs.main()
+
+
+if __name__ == '__main__':
+    main()
+
+
+	
+    

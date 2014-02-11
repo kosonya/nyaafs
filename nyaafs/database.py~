@@ -1,0 +1,7 @@
+import sqlite as db
+
+class database:
+	def __init__(self):
+		base = db.connect("nyaadb")
+		c = base.cursor()
+		

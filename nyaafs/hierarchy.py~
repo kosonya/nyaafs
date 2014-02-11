@@ -1,0 +1,58 @@
+class hierarchy:
+	def __init__(self, name, cursor, base):
+		self.cu = cursor
+		self.name = name
+		self.db = base
+		self.cu.execute("SELECT name FROM sqlite_master WHERE name LIKE 'hierarchy_%s_%%'" % self.name) #FIXME _ symbols
+		result = self.cu.fetchall()
+		if self.cu.rowcount!=3 :
+			#FIXME --- error, need exeption
+			self.cu.execute("CREATE TABLE hierarchy_%s_dir_id (\
+id INTEGER NOT NULL,\
+name TEXT,\
+PRIMARY KEY(id),\
+FOREIGN KEY (id)\
+REFERENCES hierarchy_%s_dir_hierarchy (id))"\
+				% (self.name, self.name))
+			self.cu.execute("CREATE TABLE hierarchy_%s_dir_hierarchy (\
+id INTEGER NOT NULL,\
+parent INTEGER NOT NULL,\
+PRIMARY KEY(id),\
+FOREIGN KEY(parent)\
+REFERENCES hierarchy_%s_dir_hierarchy (id),\
+FOREIGN KEY(id)\
+REFERENCES hierarchy_%s_dir_id (id))" % (self.name, self.name, self.name))
+			self.cu.execute("CREATE TABLE hierarchy_%s_file_parents(\
+file_id INTEGER NOT NULL,\
+parent INTEGER NOT NULL,\
+PRIMARY KEY(file_id),\
+FOREIGN KEY(parent)\
+REFERENCES hierarchy_%s_dir_id(id))"\
+				% (self.name, self.name))
+			self.cu.execute("""INSERT INTO hierarchy_%s_dir_id VALUES (0, 'root')""" % self.name)
+			self.db.commit()
+
+	def find_by_path(self, path):
+		request = ""
+		request = ("SELECT id FROM hierarchy_%s_dir_id DID, hierarchy_%s_dir_hierarchy\
+DIH WHERE DIH.parent = 0 AND DID.name = '%s'" % (self.name, path[1]))
+		request = self.add_to_request(self, request, path[1:])
+		return request
+
+	def file_or_dir(self, dir_id, name):
+		self.cu.execute("SELECT id FROM hierarchy_%s_dir_id I, hierarchy_%s_dir_hierarchy H\
+WHERE H.parent = %d AND I.name = '%s'" % (self.name, self.name, dir_id, name))
+		result = self.cu.fetchall()
+		if self.cu.rowcount == 1:
+			return ("dir", result[0])
+		self.cu.execute("SELECT id FROM sys_file_id SF, hierarchy_%s_file_parents FP\
+WHERE FP.parent = %d AND SF.name = '%s'" % (self.name, dir_id, name))
+		result = self.cu.fetchall()
+		return ("file", result[0])
+
+	def add_to_request(self, request, path):
+		if len(path) < 3:
+			return resuest
+		return ("SELECT id FROM hierarchy_%s_dir_id DID, hierarchy_%s_dir_hierarchy DIH\
+WHERE DID.name = '%s' AND DIH.parent = (%s)"\
+			% (self.name, add_to_request(self, request, path[:-1])))

@@ -1,0 +1,35 @@
+K 25
+svn:wc:ra_dav:version-url
+V 30
+/repos/nyaafs/!svn/ver/7/trunk
+END
+hierarchy.py
+K 25
+svn:wc:ra_dav:version-url
+V 43
+/repos/nyaafs/!svn/ver/9/trunk/hierarchy.py
+END
+a.py
+K 25
+svn:wc:ra_dav:version-url
+V 35
+/repos/nyaafs/!svn/ver/3/trunk/a.py
+END
+nyafs.py
+K 25
+svn:wc:ra_dav:version-url
+V 39
+/repos/nyaafs/!svn/ver/7/trunk/nyafs.py
+END
+gpl.py
+K 25
+svn:wc:ra_dav:version-url
+V 37
+/repos/nyaafs/!svn/ver/6/trunk/gpl.py
+END
+tz.tex
+K 25
+svn:wc:ra_dav:version-url
+V 37
+/repos/nyaafs/!svn/ver/5/trunk/tz.tex
+END

@@ -1,0 +1,272 @@
+#!/usr/bin/env python
+#
+# Copyright (C) 2009 Vladimir Badaev
+#
+# This file is part of NyaaFS
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+# $Id$
+
+import errno, fuse, os, stat, sys
+fuse.fuse_python_api = (0,2)
+
+import sqlite3 as db
+
+###################################3
+def dirFromList(list):
+    """
+    Return a properly formatted list of items suitable to a directory listing.
+    [['a', 'b', 'c']] => [[('a', 0), ('b', 0), ('c', 0)]]
+    """
+    return [[(x, 0) for x in list]]
+
+#
+# Log
+#
+class Log(object):
+    def __init__(self, name):
+    	self.name = name
+	
+    def write(self, str):
+	sys.stderr.write("LOG: %s" % str)
+	lf = open(self.name, "a")
+	lf.write(str)
+	lf.flush()
+	lf.close()
+    def log(self, cl, f, str):
+	self.write("%s.%s: %s\n" % (cl, f, str))
+
+log = Log("log")
+
+class NyaStat(fuse.Stat):
+    def	__init__(self, **kw):
+	log.log('NyaStat', '__init__', "kw = %s" % kw)
+	self.st_mode = 0
+        self.st_ino = 0
+        self.st_dev = 0
+        self.st_nlink = 0
+        self.st_uid = 0
+        self.st_gid = 0
+        self.st_size = 0
+        self.st_atime = 0
+        self.st_mtime = 0
+        self.st_ctime = 0
+	self.st_blocks = 0
+	for k in kw:
+	    setattr(self, k, kw[k])
+    def __getattr__(self, name):
+	return 0
+    def log_st(self):
+	#log.log('NyaStat', 'log stat', "st_mode %o, st_ino %s, st_dev %s, st_nlink %s, st_uid %s, st_gid %s"
+	#		% (self.st_mode, self.st_ino, self.st_dev, self.st_nlink, self.st_uid, self.st_gid))
+	#log.log('NyaStat', 'log stat', "st_size %s, st_atime %s, st_mtime %s, st_ctime %s" 
+	#		% (self.st_size, self.st_atime, self.st_mtime, self.st_ctime))
+	pass
+
+#
+# NyaDB
+class NyaDBError(Exception):
+    def __init__(self, eno=-1):
+	self.errno = eno
+    def getErrNo(self):
+	return self.errno
+    def getErrStr(self):
+	import os
+	return os.strerror(self.errno)
+	
+
+class NyaDB(object):
+    def __init__(self, name='nya_db'):
+	self.c = db.connect(database=name)
+	self.cu = self.c.cursor()
+    def __del__(self):
+	self.c.commit()
+	self.c.close()
+    def getByName(self,name):
+	""" Gets dictionary from the bd
+	Keys:
+	 n -- name
+	 m -- mode
+	 c -- content
+	"""
+	self.cu.execute("""SELECT name, mode, contents FROM files
+		WHERE name = ?;""", (name[1:],))
+	#for n, m, c in self.cu.fetchall():
+	#    #log.log("NyaFuse", "getattr", "n = %s, m = %s, c = %s" % (n, m, c))
+	#    if n == name:
+	#        r = {'n': n, 'm': m, 'c': c}
+	#	return r
+		
+	r = self.cu.fetchone()
+	log.log("NyaFuse", "getattr", "r = %s, p = %s" % (r, db.paramstyle))
+	if r == None:
+		raise NyaDBError(errno.ENOENT)	
+	r = (lambda (n, m, c): {'n': n, 'm': m, 'c': c })(r)
+	log.log("NyaFuse", "getattr", "r = %s" % r)
+	return r
+    def getNames(self):
+	""" Gets list of file names from bs"""
+	self.cu.execute("""SELECT name FROM files""")
+	files = self.cu.fetchall()
+	log.log("NyaDB", "getNames", "files = %s" % files)
+	files = map((lambda (x,): x.encode("ASCII")), files)
+	return files
+    @staticmethod
+    def getMode(mode):
+	""" Translate mode from "123" to 0123(oct) """
+	return ((mode / 100) * 8 ** 2) | (((mode % 100) / 10) * 8) | (mode % 10)
+
+nya_db = NyaDB('nya_db')
+#
+#
+# NyaFuse
+#
+class NyaFuse(fuse.Fuse):
+    #
+    # NyaFile
+    #
+#    class NyaFile(object):
+#	def __init__(self, path, flags, *mode):
+#	    self.file = path
+#	    log.log("NyaFile", "__init__",
+#		    "p = %s, f = %s, *m = %s" % (path, flags, mode))
+#	    # self.stat = NyaStat(st_mode = flag2mode 
+#	    
+#	def read(self, length, offset):
+#	    log.log("NyaFile", "read", "p = %s, l = %s, o = %s" % (self.file, length, offset))
+#	    try:
+#		f = nya_db.getByName(self.file[1:]);
+#		if length+offset > len(f['c']):
+#		    length = offset + len(f['c'])
+#	        log.log("NyaFile", "read", "p = %s, l = %s, o = %s" % (self.file, length, offset))
+#		log.log("NyaFile", "read", "c = %s" % f['c'][offset:offset+length])
+#		return f['c'][offset:offset+length]
+#	    except NyaDBError, n:
+#		return -n.getErrNo()
+#	    #return -errno.ENOSYS
+#	def write(self, buf, offset):
+#	    log.log("NyaFile", "write",
+#		    "p = %s, b = %s, o = %s" % (self.file, buf, offset))
+#	    return -errno.ENOSYS
+#
+#	def fgetattr(self):
+#	    log.log("NyaFile", "fgetattr",
+#		    "p = %s" % self.file)
+
+
+    def __init__(self, *args, **kw):
+	fuse.Fuse.__init__(self, *args, **kw)
+	log.log("NyaFuse", "__init__", "args = %s, kw = %s" % (args, kw))
+	#self.db = NyaDB('nya_db')
+
+    def getattr(self, path):
+	log.log("NyaFuse", "getattr", "path = %s" % path)
+	if path == '/':
+	    st = NyaStat(st_mode = (stat.S_IFDIR | 0777), st_nlink = 6)
+	    st.log_st()
+	    return st
+	else:
+	    try:
+	    	f = nya_db.getByName(path[1:])
+	        st = NyaStat(st_mode = stat.S_IFREG | NyaDB.getMode(f['m']), st_size = len(f['c']), st_nlink = 1)
+	        st.log_st()
+	        return st
+	    except NyaDBError, n:        
+		return -n.getErrNo()
+
+	
+    def access(self, path, mode):
+	log.log("NyaFuse", "access", "path = %s, mode = %s" % (path, mode))
+	try:
+	    f = nya_db.getByName(path[1:])
+	    m = NyaDB.getMode(f['m'])
+	    #return -errno.ENOSYS
+	    return None
+  	except NyDBError, n:
+	    return -n.getErrNo()
+
+    def readdir(self, path, offset):
+	#log.log("NyaFuse", "readdir", "path = %s, offset = %s"
+	#	% (path, offset))
+	#return [('.', ('..'] + files
+	#if files != '/':
+	#    return -errno.ENOENT
+	files = ['.', '..'] + nya_db.getNames()
+	log.log("NyaFuse", "readdir", "%s" % files)
+	#return map((lambda x: fuse.Direntry(x)), files)
+	for n in files:
+	    #log.log("NyaFuse", "readdir", "n = %s" % n)
+	    yield fuse.Direntry(n)
+	#return -errno.ENOSYS
+#    def getdir(self, path):
+#	log.log("NyaFuse", "getdir", "path = %s" % path)
+#	self.cu.execute("""SELECT name FROM files""")
+#	files = ['.', '..'] + map((lambda (x,): x), self.cu.fetchal())
+#	return dirFromList
+
+
+#    def open(self, path, flags):
+#	import os
+#	log.log("NyaFuse", "open", "p = %s, f = %o" % (path, flags))
+#	try:
+#	    f = nya_db.getByName(path[1:])
+#	    fm = NyaDB.getMode(f['m'])
+#	    log.log("NyaFuse", "open", "f.m = %o" % fm)
+#	    log.log("NyaFuse", "open", "os.O_RDONLY=%o, os.O_WRONLY=%o, os.O_RDWR=%o" % (os.O_RDONLY, os.O_WRONLY, os.O_RDWR))
+#	    if (flags & fm) != flags:
+#		return -errno.EACCES
+#	except NyaDBError, n:
+#	    return -n.getErrNo()
+
+    def read(self, path, length, offset):
+	log.log("NyaFuse", "read", "p = %s, l = %s, o = %s" % (path, length, offset))
+	try:
+	    f = nya_db.getByName(path[1:])
+	    if length+offset > len(f['c']):
+		length = offset + len(f['c'])
+	    log.log("NyaFile", "read", "p = %s, l = %s, o = %s" % (path, length, offset))
+	    log.log("NyaFile", "read", "c = %s" % f['c'][offset:offset+length])
+	    return f['c'][offset:offset+length].encode("ASCII")
+	except NyaDBError, n:
+	    return -n.getErrNo()
+
+    def write(self, path, buf, offset):
+	log.log("NyaFuse", "write", "p = %s, b = %s, o = %s" % (path, buf, offset))
+	#return -errno.ENOSYS
+
+    def main(self, *a, **kw):
+	#self.file_class = self.NyaFile
+	return fuse.Fuse.main(self, *a, **kw)
+    #def __getattr__(self, name):
+    #	log.log("NyaFuse", "__getattr__", "name = %s" % name)
+    #	return -errno.ENOSYS
+
+
+def main(*args, **kw):
+    server = NyaFuse(dash_s_do='setsingle')
+
+    server.parse(errex=1)
+    #server.parser.add_option()
+    #print type(server.fuse_args), server.fuse_args.__str__()
+    server.fuse_args.setmod("foreground")
+    #server.fuse_args.setmod("showhelp")
+    server.fuse_args.mountpoint = "mnt"
+    print server.fuse_args
+    server.main(*args, **kw)
+
+if __name__ == '__main__':
+    log.log("__main__", "__main__", "Start")
+    main()
+	

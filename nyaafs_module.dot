@@ -1,0 +1,15 @@
+digraph G{
+FUSE -> NyaFS
+NyaFS -> NyaDB
+NyaDB -> nyastat
+NyaDB -> hierarchy
+NyaDB -> systables
+NyaFile -> NyaDB
+FUSE -> NyaFile
+NyaFile -> os
+NyaFile -> sys
+os -> файлы
+sys -> файлы
+
+
+}

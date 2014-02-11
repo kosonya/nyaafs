@@ -1,0 +1,24 @@
+digraph G{
+kernel -> FUSE
+FUSE -> nyaafs
+DBAPI -> sqlite3
+sqlite3 -> nyaadb
+nyaafs -> hierarchy
+hierarchy -> unix_attr
+hierarchy -> DBAPI
+unix_attr-> DBAPI
+nyaafs -> systables
+systables -> DBAPI
+systables -> files
+nyaafs -> files
+nyaafs -> nyastat
+nyastat -> unix_attr
+nyaerror -> nyaafs
+hierarchy -> nyaerror
+unix_attr -> nyaerror
+systables -> nyaerror
+
+{rank = same; "kernel", "FUSE", "nyaafs"}
+{rank = same; "DBAPI", "sqlite3", "nyaadb"}
+
+}
